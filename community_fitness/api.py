@@ -11,6 +11,7 @@ from .attendance import Attendance
 from .competition import Competition
 from .disputes import Disputes
 from .errors import DomainError
+from .funnel import Funnel
 from .publication import Publication
 from .provenance import Provenance
 from .reconciliation import Reconciliation
@@ -127,6 +128,7 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
     reconciliation = Reconciliation(store)
     readiness = Readiness(store)
     sessions = ScoringSessions(store)
+    funnel = Funnel(store)
     application = FastAPI(title='Community Fitness Event Data', version='1.0.0')
     application.state.store = store
 
@@ -294,6 +296,30 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
     @application.get('/events/{event_id}/snapshots-compare')
     def difference(event_id: str, older: int, newer: int):
         return publication.difference(event_id, older, newer)
+
+    @application.get('/events/{event_id}/funnel/live')
+    def live_funnel(event_id: str, award_top_n: int = Query(3, ge=1, le=100)):
+        # Mutable view of current tables; never combine rows from this response
+        # with a snapshot response — their comparison_key values differ.
+        return funnel.live(event_id, award_top_n)
+
+    @application.get('/events/{event_id}/funnel/snapshot')
+    def snapshot_funnel(event_id: str, version: int | None = None,
+                        award_top_n: int = Query(3, ge=1, le=100)):
+        return funnel.snapshot(event_id, version, award_top_n)
+
+    @application.get('/events/{event_id}/export/funnel.csv')
+    def funnel_csv(event_id: str, basis: str = 'snapshot', version: int | None = None,
+                   award_top_n: int = Query(3, ge=1, le=100)):
+        # CSV export is restricted to immutable snapshots by default so a
+        # downloaded sheet can never silently mix live check-ins with old ranks.
+        if basis == 'live':
+            report = funnel.live(event_id, award_top_n)
+        elif basis == 'snapshot':
+            report = funnel.snapshot(event_id, version, award_top_n)
+        else:
+            raise DomainError('invalid_basis', "basis must be 'live' or 'snapshot'")
+        return PlainTextResponse(funnel.csv(report), media_type='text/csv; charset=utf-8')
 
     @application.get('/events/{event_id}/export/standings.csv')
     def standings_csv(event_id: str, version: int | None = None):
